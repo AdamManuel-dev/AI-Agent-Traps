@@ -1,0 +1,84 @@
+{#
+  Template: index.html
+  Purpose: Dashboard page showing all active trap pages in a table and the most
+           recent exfiltration captures. Serves as the landing page and control
+           panel for the demo server. Provides links to individual trap pages,
+           the full capture log (JSON and HTML), and a reset button.
+  Trap type: None -- dashboard/utility page
+  Cloaking: N/A
+  Variables:
+    - trap_pages (list[dict]): Registry of trap pages, each with name, url, trap_type
+    - capture_count (int): Total number of exfiltration captures since last reset
+    - recent_captures (list[dict]): Last 10 captures (reversed/newest first), each
+      with timestamp, ip, user_agent, body_preview (truncated to 200 chars)
+  Last modified: 2026-04-06T18:20:21Z
+#}
+{% extends "base.html" %}
+{% block title %}Dashboard — ResearchHub{% endblock %}
+
+{% block content %}
+<h1>Demo Server Dashboard</h1>
+<p class="muted">Local red-team server for AI Agent Traps testing. All trap pages are active on localhost:5000.</p>
+
+<section>
+  <h2>Trap Pages</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Page Name</th>
+        <th>URL</th>
+        <th>Trap Type</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for page in trap_pages %}
+      <tr>
+        <td>{{ page.name }}</td>
+        <td><a href="{{ page.url }}">{{ page.url }}</a></td>
+        <td><code>{{ page.trap_type }}</code></td>
+        <td><span class="badge badge-active">Active</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
+  <h2>Capture Log</h2>
+  <p>Captures since last reset: <strong>{{ capture_count }}</strong></p>
+
+  {% if recent_captures %}
+  <table>
+    <thead>
+      <tr>
+        <th>Timestamp</th>
+        <th>IP</th>
+        <th>User-Agent</th>
+        <th>Body (truncated)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in recent_captures %}
+      <tr>
+        <td>{{ c.timestamp }}</td>
+        <td>{{ c.ip }}</td>
+        <td>{{ c.user_agent[:40] }}{% if c.user_agent|length > 40 %}…{% endif %}</td>
+        <td>{{ c.body_preview }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No captures yet. Run <code>python agent_tester.py --agent naive</code> to test.</p>
+  {% endif %}
+
+  <div class="flex-row" style="margin-top:1rem;">
+    <form method="POST" action="/reset">
+      <button class="btn-danger" type="submit">Reset Captures</button>
+    </form>
+    <a href="/capture/log">View full capture log (JSON)</a>
+    <a href="/capture/log/view">View full capture log (HTML)</a>
+  </div>
+</section>
+{% endblock %}

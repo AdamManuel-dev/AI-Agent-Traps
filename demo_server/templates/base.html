@@ -1,0 +1,41 @@
+{#
+  Template: base.html
+  Purpose: Shared layout template providing the HTML skeleton, header navigation,
+           and footer for all pages in the demo server. All other templates extend
+           this base via {% extends "base.html" %}.
+  Trap type: None -- shared layout, no adversarial content
+  Cloaking: N/A
+  Variables: None directly; child templates populate {% block title %},
+             {% block head_extra %}, and {% block content %}
+  Last modified: 2026-04-06T18:20:21Z
+#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}ResearchHub{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>ResearchHub</h1>
+      <nav>
+        <a href="/">Home</a>
+        <a href="/article/ai-safety-report">Articles</a>
+        <a href="/wiki/compliance-standards">Wiki</a>
+        <a href="/docs/deployment-checklist">Docs</a>
+        <a href="/advisory/security-review">Advisories</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer>
+    <p>© 2025 ResearchHub. For authorized research use only.</p>
+  </footer>
+</body>
+</html>

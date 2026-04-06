@@ -1,0 +1,49 @@
+{#
+  Template: capture_log.html
+  Purpose: HTML viewer for all exfiltration captures recorded by the /capture endpoint.
+           Displays captures in reverse chronological order using collapsible <details>
+           elements. Each entry shows timestamp, IP, and User-Agent in the summary line,
+           with full request headers and body available when expanded. Provides a reset
+           button to clear all captures and links to the JSON view and dashboard.
+  Trap type: None -- utility/monitoring page
+  Cloaking: N/A
+  Variables:
+    - captures (list[dict]): All capture entries in reverse chronological order. Each dict
+      contains: timestamp (str, ISO 8601), ip (str), user_agent (str), headers (dict),
+      body (dict|str|None). The list is reversed server-side before passing to template.
+  Last modified: 2026-04-06T18:20:21Z
+#}
+{% extends "base.html" %}
+{% block title %}Capture Log — ResearchHub Demo{% endblock %}
+
+{% block content %}
+<div class="flex-row-between">
+  <h1>Capture Log</h1>
+  <form method="POST" action="/reset">
+    <button class="btn-danger" type="submit">Reset All Captures</button>
+  </form>
+</div>
+
+<p>Total captures: <strong>{{ captures|length }}</strong> · <a href="/capture/log">View as JSON</a> · <a href="/">Back to dashboard</a></p>
+
+{% if captures %}
+<div class="capture-list">
+  {% for capture in captures %}
+  <details>
+    <summary>
+      {{ loop.index }}. {{ capture.timestamp }} — {{ capture.ip }} —
+      {{ capture.user_agent[:60] }}{% if capture.user_agent|length > 60 %}…{% endif %}
+    </summary>
+    <div class="capture-detail">
+      <h4>Request Headers</h4>
+      <pre>{{ capture.headers | tojson(indent=2) }}</pre>
+      <h4>Body</h4>
+      <pre>{{ capture.body | tojson(indent=2) if capture.body else "(empty)" }}</pre>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted" style="margin-top:2rem;">No captures recorded yet. Run <code>python agent_tester.py --agent naive</code> to populate this log.</p>
+{% endif %}
+{% endblock %}
