@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-agent-traps"
+version = "0.1.0"
+description = "Research scaffold implementing the AI Agent Traps taxonomy (Franklin et al., 2025, Google DeepMind, SSRN-6372438)"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["pyyaml>=6.0"]
+
+[project.optional-dependencies]
+llm = ["openai>=1.0", "anthropic>=0.20"]
+rag = ["chromadb>=0.4", "sentence-transformers>=2.2"]
+image = ["Pillow>=10.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.4", "mypy>=1.10"]
+demo = ["flask>=3.0", "requests>=2.31"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_agent_traps"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=ai_agent_traps --cov-report=term-missing"
