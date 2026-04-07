@@ -18,6 +18,7 @@ Table 1 category description:
 from __future__ import annotations
 
 import base64
+import io
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -239,6 +240,142 @@ class DynamicCloaking(AgentTrapBase):
 
 
 # ---------------------------------------------------------------------------
+# LSB Steganography helpers (Cheddad et al., 2010)
+# ---------------------------------------------------------------------------
+
+
+def _encode_lsb(
+    pixels: list[tuple[int, ...]],
+    message: str,
+) -> list[tuple[int, ...]]:
+    """Encode message bytes into LSBs of pixel RGB values.
+
+    Adds a null terminator so the decoder knows where the message ends.
+    Only the first 3 channels (RGB) of each pixel are modified; any alpha
+    channel is preserved unchanged.
+
+    Parameters
+    ----------
+    pixels : list[tuple[int, ...]]
+        Flat list of pixel tuples (at least 3 channels each).
+    message : str
+        UTF-8 message to encode.
+
+    Raises
+    ------
+    ValueError
+        If the message is too long for the available pixel capacity.
+    """
+    msg_bytes = message.encode("utf-8") + b"\x00"
+    bits: list[int] = []
+    for byte_val in msg_bytes:
+        for i in range(7, -1, -1):
+            bits.append((byte_val >> i) & 1)
+
+    if len(bits) > len(pixels) * 3:
+        raise ValueError(
+            f"Message too long for image: {len(bits)} bits needed, "
+            f"{len(pixels) * 3} available"
+        )
+
+    result: list[tuple[int, ...]] = []
+    bit_idx = 0
+    for pixel in pixels:
+        new_channels = list(pixel)
+        for ch in range(min(3, len(pixel))):  # RGB channels only
+            if bit_idx < len(bits):
+                new_channels[ch] = (new_channels[ch] & 0xFE) | bits[bit_idx]
+                bit_idx += 1
+        result.append(tuple(new_channels))
+    return result
+
+
+def _decode_lsb(pixels: list[tuple[int, ...]]) -> str:
+    """Decode LSB-encoded message from pixels.
+
+    Reads the least significant bit from each RGB channel, assembles bytes,
+    and stops at the first null terminator.
+
+    Parameters
+    ----------
+    pixels : list[tuple[int, ...]]
+        Flat list of pixel tuples (at least 3 channels each).
+
+    Returns
+    -------
+    str
+        The decoded UTF-8 message.
+    """
+    bits: list[int] = []
+    for pixel in pixels:
+        for ch in range(min(3, len(pixel))):
+            bits.append(pixel[ch] & 1)
+
+    raw_bytes: list[int] = []
+    for i in range(0, len(bits) - 7, 8):
+        byte_val = 0
+        for j in range(8):
+            byte_val = (byte_val << 1) | bits[i + j]
+        if byte_val == 0:
+            break
+        raw_bytes.append(byte_val)
+    return bytes(raw_bytes).decode("utf-8")
+
+
+def chi_square_detection(image_path: str) -> float:
+    """Chi-square steganalysis. Returns p-value; low p-value suggests steganographic content.
+
+    This is a simplified RS-style analysis comparing even/odd pixel value
+    frequencies. A uniform distribution is expected for clean images; LSB
+    embedding skews this distribution.
+
+    Requires [image] extra *plus* numpy and scipy::
+
+        pip install 'ai-agent-traps[image]' numpy scipy
+
+    Parameters
+    ----------
+    image_path : str
+        Path to a PNG or other image file.
+
+    Returns
+    -------
+    float
+        p-value from a chi-square test. Low values (<0.05) suggest
+        steganographic content may be present.
+
+    Raises
+    ------
+    ImportError
+        If Pillow, numpy, or scipy are not installed.
+    """
+    try:
+        from PIL import Image
+    except ImportError as e:
+        raise ImportError(
+            "chi_square_detection requires Pillow: pip install 'ai-agent-traps[image]'"
+        ) from e
+    try:
+        import numpy as np
+        from scipy import stats  # type: ignore[import-untyped]
+    except ImportError as e:
+        raise ImportError(
+            "chi_square_detection requires numpy and scipy: pip install numpy scipy"
+        ) from e
+
+    img = Image.open(image_path).convert("RGB")
+    arr = np.array(img).flatten()
+    # Compare even/odd value frequencies (RS analysis)
+    even_count = int(np.sum(arr % 2 == 0))
+    odd_count = int(np.sum(arr % 2 == 1))
+    total = len(arr)
+    observed = np.array([even_count, odd_count])
+    expected = np.array([total / 2, total / 2])
+    _, p_value = stats.chisquare(observed, f_exp=expected)
+    return float(p_value)
+
+
+# ---------------------------------------------------------------------------
 # §Steganographic Payloads (p. 6)
 # ---------------------------------------------------------------------------
 
@@ -258,13 +395,32 @@ class SteganographicPayload(AgentTrapBase):
      payload data replaces the least important bits of pixel colour information
      in an image (Cheddad et al., 2010)." (§Steganographic, p. 6)
 
-    NOTE: This class simulates text-only LSB-like encoding in a base64 payload.
-    Full steganography requires PIL / a real image array. Install 'Pillow' and
-    see REPRODUCTION_NOTES.md for the full implementation path.
+    When Pillow is installed (``pip install 'ai-agent-traps[image]'``), this
+    class produces a real 64x64 PNG image with the hidden instruction encoded
+    in the LSBs of pixel data. Without Pillow, it falls back to a base64 text
+    surrogate for backward compatibility.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, image_size: tuple[int, int] = (64, 64)) -> None:
+        """
+        Parameters
+        ----------
+        image_size : tuple[int, int]
+            Width and height of the carrier image (only used when Pillow is
+            available). Default: (64, 64), providing 64*64*3 = 12288 bits of
+            LSB capacity (~1536 ASCII characters).
+        """
         super().__init__(get_spec(TrapSubtype.STEGANOGRAPHIC_PAYLOADS))
+        self._image_size = image_size
+
+    @staticmethod
+    def _pillow_available() -> bool:
+        """Check whether Pillow is importable."""
+        try:
+            from PIL import Image  # noqa: F401
+            return True
+        except ImportError:
+            return False
 
     def craft_payload(
         self,
@@ -272,16 +428,63 @@ class SteganographicPayload(AgentTrapBase):
         target_context: str | None = None,
     ) -> TrapPayload:
         """
-        Simulate LSB steganographic encoding via base64 (text surrogate).
+        Craft a steganographic payload.
 
-        [UNSPECIFIED] The paper describes image-based LSB steganography
-        (Cheddad et al., 2010) but does not specify pixel depth, image
-        format, or encoding scheme for adversarial instructions.
+        When Pillow is available, creates a real 64x64 solid-colour PNG with
+        the hidden instruction encoded in the least significant bits of pixel
+        RGB values (Cheddad et al., 2010). The PNG bytes are returned as
+        base64 in ``metadata["image_b64"]`` and the raw data URI in ``raw``.
 
-        Using: base64 encoding as a text-level surrogate for illustration.
-        For actual image steganography: use PIL to manipulate LSBs of a
-        carrier image (see REPRODUCTION_NOTES.md §Steganographic).
+        Without Pillow, falls back to a simple base64 text surrogate.
+
+        [UNSPECIFIED] The paper describes image-based LSB steganography but
+        does not specify pixel depth, image format, or encoding scheme.
         """
+        if self._pillow_available():
+            return self._craft_lsb_payload(hidden_instruction, target_context)
+        return self._craft_fallback_payload(hidden_instruction)
+
+    def _craft_lsb_payload(
+        self,
+        hidden_instruction: str,
+        target_context: str | None = None,
+    ) -> TrapPayload:
+        """Produce a real LSB-steganographic PNG image."""
+        from PIL import Image
+
+        width, height = self._image_size
+
+        # Create a solid mid-grey carrier image (RGB)
+        img = Image.new("RGB", (width, height), color=(128, 128, 128))
+        pixels_list: list[tuple[int, ...]] = list(img.getdata())
+
+        # Encode the hidden instruction into pixel LSBs
+        encoded_pixels = _encode_lsb(pixels_list, hidden_instruction)
+        img.putdata(encoded_pixels)
+
+        # Serialize to PNG bytes
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+        image_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+        raw = f"data:image/png;base64,{image_b64}"
+
+        return TrapPayload(
+            raw=raw,
+            hidden_instruction=hidden_instruction,
+            metadata={
+                "encoding": "lsb_png",
+                "image_b64": image_b64,
+                "image_size": list(self._image_size),
+                "message_bytes": len(hidden_instruction.encode("utf-8")) + 1,
+                "capacity_bits": width * height * 3,
+                "ref": "Cheddad et al. 2010 — LSB steganography",
+            },
+        )
+
+    def _craft_fallback_payload(self, hidden_instruction: str) -> TrapPayload:
+        """Base64 text surrogate when Pillow is not installed."""
         encoded = base64.b64encode(hidden_instruction.encode()).decode()
         raw = (
             f"[SIMULATED_IMAGE_DATA_URL: data:image/png;base64,{encoded[:32]}...]"
@@ -292,8 +495,8 @@ class SteganographicPayload(AgentTrapBase):
             metadata={
                 "encoding": "base64_surrogate",
                 "note": (
-                    "[UNSPECIFIED] Actual LSB image steganography requires "
-                    "Pillow. This is a text surrogate for walkthrough purposes. "
+                    "Pillow not installed. Install with: "
+                    "pip install 'ai-agent-traps[image]' for real LSB steganography. "
                     "Reference: Cheddad et al., 2010"
                 ),
             },
@@ -301,21 +504,22 @@ class SteganographicPayload(AgentTrapBase):
 
     def inject(self, payload: TrapPayload, agent: AgentProtocol) -> TrapResult:
         """
-        Simulate injection of a steganographic image payload.
+        Inject a steganographic image payload into the agent.
 
-        For multimodal agents, the image would be passed to the vision
-        encoder. Here we pass the surrogate text representation.
+        For multimodal agents, the image would be passed to the vision encoder.
+        Here we pass the raw data URI or surrogate string to process().
+
+        [UNSPECIFIED] How a multimodal agent's vision encoder is invoked.
         """
-        # [UNSPECIFIED] How a multimodal agent's vision encoder is invoked.
-        # Using: pass the raw surrogate string to process().
         response = agent.process(payload.raw)
+        encoding = payload.metadata.get("encoding", "unknown")
         return TrapResult(
             succeeded=_check_succeeded(response, payload.hidden_instruction),
             agent_response=response,
             payload=payload,
             notes=(
-                "Steganographic payload injected as base64 surrogate. "
-                "For real evaluation: use PIL + LSB encoding in carrier image."
+                f"Steganographic payload injected via {encoding}. "
+                f"{'Real LSB PNG' if encoding == 'lsb_png' else 'Base64 surrogate'}."
             ),
         )
 

@@ -14,7 +14,13 @@ from pathlib import Path
 import pytest
 
 from ai_agent_traps.agent import EchoAgent, NaiveAgent
-from ai_agent_traps.evaluate import EvalResult, EvalSuite, run_single_eval
+from ai_agent_traps.evaluate import (
+    EvalResult,
+    EvalSuite,
+    MultiAgentEvalResult,
+    run_single_eval,
+    run_systemic_sweep,
+)
 from ai_agent_traps.taxonomy import TrapCategory, TrapSubtype
 from ai_agent_traps.traps.content_injection import WebStandardObfuscation
 
@@ -238,3 +244,182 @@ class TestRunSingleEval:
         agent = NaiveAgent()
         result = run_single_eval(trap, agent, "do something")
         assert result.agent_type == "NaiveAgent"
+
+
+# -------------------------------------------------------------------------
+# Multi-agent evaluation
+# -------------------------------------------------------------------------
+
+
+class TestMultiAgentEval:
+    """Tests for run_systemic_sweep and MultiAgentEvalResult."""
+
+    def test_run_systemic_sweep_returns_eval_suite(self) -> None:
+        from ai_agent_traps.traps.systemic import CongestionTrap
+
+        suite = run_systemic_sweep(
+            traps=[CongestionTrap()],
+            agent_factory=lambda: NaiveAgent(),
+            population_sizes=[3],
+        )
+        assert len(suite.results) > 0
+        assert all(isinstance(r, MultiAgentEvalResult) for r in suite.results)
+
+    def test_convergence_rate_between_zero_and_one(self) -> None:
+        from ai_agent_traps.traps.systemic import CongestionTrap
+
+        suite = run_systemic_sweep(
+            traps=[CongestionTrap()],
+            agent_factory=lambda: NaiveAgent(),
+            population_sizes=[5],
+        )
+        for result in suite.results:
+            assert isinstance(result, MultiAgentEvalResult)
+            assert 0.0 <= result.convergence_rate <= 1.0
+
+    def test_population_size_matches_factory_call_count(self) -> None:
+        from ai_agent_traps.traps.systemic import CongestionTrap
+
+        call_count = 0
+
+        def counting_factory() -> NaiveAgent:
+            nonlocal call_count
+            call_count += 1
+            return NaiveAgent()
+
+        suite = run_systemic_sweep(
+            traps=[CongestionTrap()],
+            agent_factory=counting_factory,
+            population_sizes=[7],
+        )
+        assert call_count == 7
+        assert len(suite.results) == 1
+
+    def test_systemic_summary_returns_expected_keys(self) -> None:
+        from ai_agent_traps.traps.systemic import CongestionTrap
+
+        suite = run_systemic_sweep(
+            traps=[CongestionTrap()],
+            agent_factory=lambda: NaiveAgent(),
+            population_sizes=[5],
+        )
+        summary = suite.systemic_summary()
+        assert "n_systemic_results" in summary
+        assert "avg_convergence_rate" in summary
+        assert "max_convergence_rate" in summary
+        assert "by_trap" in summary
+
+    def test_multi_agent_eval_result_to_dict_includes_new_fields(self) -> None:
+        result = MultiAgentEvalResult(
+            trap_subtype=TrapSubtype.CONGESTION,
+            trap_category=TrapCategory.SYSTEMIC,
+            agent_type="test",
+            succeeded=True,
+            latency_ms=1.0,
+            agent_response="test",
+            population_size=10,
+            n_affected=7,
+            convergence_rate=0.7,
+        )
+        d = result.to_dict()
+        assert d["population_size"] == 10
+        assert d["n_affected"] == 7
+        assert d["convergence_rate"] == 0.7
+        assert d["cascade_depth_reached"] == 0
+
+    def test_systemic_summary_empty_when_no_multi_agent_results(self) -> None:
+        suite = EvalSuite()
+        summary = suite.systemic_summary()
+        assert summary["n_systemic_results"] == 0
+        assert summary["avg_convergence_rate"] == 0.0
+
+    def test_run_systemic_sweep_default_population_sizes(self) -> None:
+        from ai_agent_traps.traps.systemic import CongestionTrap
+
+        suite = run_systemic_sweep(
+            traps=[CongestionTrap()],
+            agent_factory=lambda: NaiveAgent(),
+        )
+        # Default population_sizes is [5, 10, 20] -> 3 results for 1 trap
+        assert len(suite.results) == 3
+        sizes = [r.population_size for r in suite.results]  # type: ignore[union-attr]
+        assert sizes == [5, 10, 20]
+
+    def test_run_systemic_sweep_multiple_traps(self) -> None:
+        from ai_agent_traps.traps.systemic import CongestionTrap, InterdependenceCascade
+
+        suite = run_systemic_sweep(
+            traps=[CongestionTrap(), InterdependenceCascade()],
+            agent_factory=lambda: NaiveAgent(),
+            population_sizes=[3],
+        )
+        # 2 traps x 1 population size = 2 results
+        assert len(suite.results) == 2
+
+    def test_systemic_summary_by_trap_has_correct_structure(self) -> None:
+        from ai_agent_traps.traps.systemic import CongestionTrap
+
+        suite = run_systemic_sweep(
+            traps=[CongestionTrap()],
+            agent_factory=lambda: NaiveAgent(),
+            population_sizes=[3, 5],
+        )
+        summary = suite.systemic_summary()
+        assert summary["n_systemic_results"] == 2
+        by_trap = summary["by_trap"]
+        assert TrapSubtype.CONGESTION.value in by_trap
+        trap_stats = by_trap[TrapSubtype.CONGESTION.value]
+        assert "avg_convergence_rate" in trap_stats
+        assert "max_convergence_rate" in trap_stats
+        assert trap_stats["n_results"] == 2
+
+    def test_multi_agent_eval_result_inherits_eval_result(self) -> None:
+        result = MultiAgentEvalResult(
+            trap_subtype=TrapSubtype.CONGESTION,
+            trap_category=TrapCategory.SYSTEMIC,
+            agent_type="test",
+            succeeded=True,
+            latency_ms=1.0,
+            agent_response="test",
+            population_size=5,
+            n_affected=3,
+            convergence_rate=0.6,
+        )
+        assert isinstance(result, EvalResult)
+        assert "SUCCEEDED" in result.success_str
+
+    def test_eval_suite_to_csv_with_mixed_results(self) -> None:
+        """to_csv() should not crash when suite has both EvalResult and MultiAgentEvalResult."""
+        suite = EvalSuite()
+        # Add a plain EvalResult
+        trap = WebStandardObfuscation()
+        result = run_single_eval(trap, EchoAgent(), "test")
+        suite.add(result)
+        # Add a MultiAgentEvalResult
+        multi = MultiAgentEvalResult(
+            trap_subtype=result.trap_subtype,
+            trap_category=result.trap_category,
+            agent_type="test",
+            succeeded=True,
+            latency_ms=1.0,
+            agent_response="test",
+            population_size=5,
+            n_affected=3,
+            convergence_rate=0.6,
+        )
+        suite.add(multi)
+        # Should not raise
+        csv_output = suite.to_csv()
+        assert "population_size" in csv_output
+        assert "convergence_rate" in csv_output
+
+    def test_run_systemic_sweep_rejects_negative_population(self) -> None:
+        """run_systemic_sweep raises ValueError for population_sizes < 1."""
+        from ai_agent_traps.traps.systemic import CongestionTrap
+
+        with pytest.raises(ValueError, match="population_sizes"):
+            run_systemic_sweep(
+                traps=[CongestionTrap()],
+                agent_factory=lambda: NaiveAgent(),
+                population_sizes=[-1],
+            )

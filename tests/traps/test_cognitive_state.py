@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from ai_agent_traps.agent import EchoAgent, NaiveAgent
+from ai_agent_traps.rag.corpus import RAGCorpus
 from ai_agent_traps.traps.base import TrapPayload, TrapResult
 from ai_agent_traps.traps.cognitive_state import (
     ContextualLearningTrap,
@@ -152,3 +153,65 @@ class TestContextualLearningTrap:
         trap = ContextualLearningTrap(attack_mode="reward_poisoning")
         payload = trap.craft_payload(INSTRUCTION)
         assert "reward" in payload.raw.lower()
+
+
+# -------------------------------------------------------------------------
+# RAGKnowledgePoisoning with ChromaDB corpus
+# -------------------------------------------------------------------------
+
+
+try:
+    import chromadb as _chromadb  # noqa: F401
+
+    _has_chromadb = True
+except ImportError:
+    _has_chromadb = False
+
+
+@pytest.mark.skipif(not _has_chromadb, reason="chromadb not installed ([rag] extra required)")
+class TestRAGKnowledgePoisoningWithCorpus:
+    """Tests for RAGKnowledgePoisoning with a ChromaDB-backed RAGCorpus."""
+
+    @pytest.fixture()
+    def corpus(self) -> RAGCorpus:
+        import uuid
+
+        # Unique collection name per test to prevent cross-test pollution.
+        return RAGCorpus(collection_name=f"test_{uuid.uuid4().hex[:12]}")
+
+    def test_craft_payload_inserts_into_chromadb(self, corpus: RAGCorpus) -> None:
+        """craft_payload should add the fabricated fact to the ChromaDB corpus."""
+        trap = RAGKnowledgePoisoning(rag_corpus=corpus)
+        trap.craft_payload(INSTRUCTION)
+        assert len(corpus) == 1
+
+    def test_chromadb_retrieves_poisoned_doc(self, corpus: RAGCorpus) -> None:
+        """The poisoned doc should be retrievable via semantic search."""
+        trap = RAGKnowledgePoisoning(rag_corpus=corpus)
+        trap.craft_payload(INSTRUCTION, target_context="security")
+        results = corpus.retrieve("security vulnerabilities", top_k=1)
+        assert len(results) == 1
+        assert "security" in results[0].lower() or "vulnerabilities" in results[0].lower()
+
+    def test_inject_uses_chromadb_retrieval(self, corpus: RAGCorpus) -> None:
+        """inject() should use ChromaDB semantic retrieval when corpus is set."""
+        trap = RAGKnowledgePoisoning(rag_corpus=corpus)
+        payload = trap.craft_payload(INSTRUCTION)
+        result = trap.inject(payload, EchoAgent())
+        assert isinstance(result, TrapResult)
+        assert "ChromaDB" in result.notes
+
+    def test_metadata_indicates_chromadb(self, corpus: RAGCorpus) -> None:
+        """Payload metadata should flag chromadb=True."""
+        trap = RAGKnowledgePoisoning(rag_corpus=corpus)
+        payload = trap.craft_payload(INSTRUCTION)
+        assert payload.metadata["chromadb"] is True
+
+    def test_backward_compat_without_corpus(self) -> None:
+        """Default construction (no corpus) must still work exactly as before."""
+        trap = RAGKnowledgePoisoning()
+        payload = trap.craft_payload(INSTRUCTION)
+        result = trap.inject(payload, EchoAgent())
+        assert isinstance(result, TrapResult)
+        assert payload.metadata["chromadb"] is False
+        assert "in-memory" in result.notes
