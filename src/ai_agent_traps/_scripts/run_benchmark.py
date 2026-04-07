@@ -116,6 +116,18 @@ def _build_entries(
     from ai_agent_traps.benchmark import BenchmarkEntry
     from ai_agent_traps.config import DEFAULT_CONFIG
     from ai_agent_traps.metrics.keyword_overlap import KeywordOverlapMetric
+
+    # LLM agents require a semantic judge; keyword-overlap gives false positives
+    # because aligned models quote injected instructions while refusing them.
+    if key in _LLM_AGENTS:
+        from ai_agent_traps.metrics.llm_judge import LLMJudgeMetric
+        metric: KeywordOverlapMetric | LLMJudgeMetric = LLMJudgeMetric(
+            model=_LLM_AGENTS[key][2],
+            provider=key,
+            budget_usd=budget,
+        )
+    else:
+        metric = KeywordOverlapMetric()
     from ai_agent_traps.traps.behavioural import (
         DataExfiltrationTrap,
         EmbeddedJailbreak,
@@ -147,7 +159,6 @@ def _build_entries(
     )
 
     instruction = DEFAULT_CONFIG.simulation.default_instruction
-    metric = KeywordOverlapMetric()
 
     trap_classes = [
         # Content Injection
@@ -241,7 +252,8 @@ def main() -> int:
     print("=" * 50)
     print(f"Agent:      {args.agent}")
     print(f"Seed:       {args.seed}")
-    print(f"Metric:     {args.model or 'keyword-overlap'}")
+    auto_metric = "llm-judge" if args.agent.lower() in _LLM_AGENTS else "keyword-overlap"
+    print(f"Metric:     {args.model or auto_metric}")
     print(f"Budget:     {'unlimited' if args.budget is None else f'${args.budget:.2f}'}")
     print(f"Output dir: {output_dir}")
     print()
