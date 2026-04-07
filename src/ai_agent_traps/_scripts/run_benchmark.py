@@ -56,16 +56,61 @@ _AGENT_REGISTRY: dict[str, str] = {
     "echo": "EchoAgent",
 }
 
+# LLM agents: (module_path, class_name, default_model)
+_LLM_AGENTS: dict[str, tuple[str, str, str]] = {
+    "anthropic": (
+        "ai_agent_traps.agents.anthropic_agent",
+        "AnthropicAgent",
+        "claude-haiku-4-5-20251001",
+    ),
+    "openai": (
+        "ai_agent_traps.agents.openai_agent",
+        "OpenAIAgent",
+        "gpt-4o-mini",
+    ),
+}
 
-def _build_entries(agent_name: str = "naive") -> list[BenchmarkEntry]:
-    """Create one BenchmarkEntry per trap subtype (all 19 subtypes)."""
-    import ai_agent_traps.agent as _agent_mod
 
-    agent_cls_name = _AGENT_REGISTRY.get(agent_name.lower())
-    if agent_cls_name is None:
-        valid = ", ".join(_AGENT_REGISTRY)
-        raise ValueError(f"Unknown agent {agent_name!r}. Valid options: {valid}")
-    agent_cls = getattr(_agent_mod, agent_cls_name)
+def _build_entries(
+    agent_name: str = "naive",
+    budget: float | None = None,
+) -> tuple[list[BenchmarkEntry], object | None]:
+    """Create one BenchmarkEntry per trap subtype.
+
+    Returns (entries, llm_agent_instance_or_None). The llm_agent instance
+    is returned so callers can inspect total_cost_usd after the run.
+    """
+    import importlib
+
+    from ai_agent_traps.benchmark import BenchmarkEntry  # noqa: F811
+
+    llm_agent_instance = None
+    key = agent_name.lower()
+
+    if key in _LLM_AGENTS:
+        mod_path, cls_name, default_model = _LLM_AGENTS[key]
+        try:
+            mod = importlib.import_module(mod_path)
+        except ImportError as exc:
+            print(
+                f"LLM agent requires [llm] extra: pip install -e '.[llm]'\n{exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        agent_cls = getattr(mod, cls_name)
+        llm_agent_instance = agent_cls(model=default_model, budget_usd=budget)
+        agent_factory = lambda: llm_agent_instance  # noqa: E731  shared instance
+        agent_label = f"{cls_name}({default_model})"
+    else:
+        import ai_agent_traps.agent as _agent_mod
+
+        agent_cls_name = _AGENT_REGISTRY.get(key)
+        if agent_cls_name is None:
+            valid = ", ".join({**_AGENT_REGISTRY, **_LLM_AGENTS})
+            raise ValueError(f"Unknown agent {agent_name!r}. Valid options: {valid}")
+        agent_cls = getattr(_agent_mod, agent_cls_name)
+        agent_factory = agent_cls
+        agent_label = agent_cls_name
 
     from ai_agent_traps.agent import NaiveAgent  # noqa: F401 (kept for compat)
     from ai_agent_traps.benchmark import BenchmarkEntry
@@ -139,13 +184,13 @@ def _build_entries(agent_name: str = "naive") -> list[BenchmarkEntry]:
         entries.append(
             BenchmarkEntry(
                 trap=trap,
-                agent_factory=agent_cls,
+                agent_factory=agent_factory,
                 metric=metric,
                 hidden_instruction=instruction,
-                description=f"{trap.spec.subtype.value} / {agent_cls_name}",
+                description=f"{trap.spec.subtype.value} / {agent_label}",
             )
         )
-    return entries
+    return entries, llm_agent_instance
 
 
 def main() -> int:
@@ -181,7 +226,11 @@ def main() -> int:
         "--agent",
         default="naive",
         metavar="AGENT",
-        help=f"Agent to evaluate against. Options: {', '.join(_AGENT_REGISTRY)} (default: naive)",
+        help=(
+            f"Agent to evaluate against. "
+            f"Mock: {', '.join(_AGENT_REGISTRY)}. "
+            f"LLM: {', '.join(_LLM_AGENTS)}. (default: naive)"
+        ),
     )
     args = parser.parse_args()
 
@@ -205,7 +254,8 @@ def main() -> int:
         return 1
 
     suite = BenchmarkSuite(name="full-sweep", seed=args.seed)
-    for entry in _build_entries(args.agent):
+    entries, llm_agent = _build_entries(args.agent, budget=args.budget)
+    for entry in entries:
         suite.add(entry)
 
     print(f"Running {len(suite.entries)} benchmark entries...")
@@ -215,6 +265,8 @@ def main() -> int:
 
     n_passed = sum(r.succeeded for r in results)
     print(f"Done in {elapsed:.1f}s — {n_passed}/{len(results)} succeeded")
+    if llm_agent is not None and hasattr(llm_agent, "total_cost_usd"):
+        print(f"LLM cost:   ${llm_agent.total_cost_usd:.4f} USD")
     print()
 
     timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
