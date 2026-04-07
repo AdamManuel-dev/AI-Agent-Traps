@@ -49,9 +49,25 @@ def _build_metric(model: str | None, budget: float | None) -> SuccessMetric:
     return LLMJudgeMetric(model=model, budget_usd=budget)
 
 
-def _build_entries() -> list[BenchmarkEntry]:
+_AGENT_REGISTRY: dict[str, str] = {
+    "naive": "NaiveAgent",
+    "filtered": "FilteredAgent",
+    "memory": "MemoryAgent",
+    "echo": "EchoAgent",
+}
+
+
+def _build_entries(agent_name: str = "naive") -> list[BenchmarkEntry]:
     """Create one BenchmarkEntry per trap subtype (all 19 subtypes)."""
-    from ai_agent_traps.agent import NaiveAgent
+    import ai_agent_traps.agent as _agent_mod
+
+    agent_cls_name = _AGENT_REGISTRY.get(agent_name.lower())
+    if agent_cls_name is None:
+        valid = ", ".join(_AGENT_REGISTRY)
+        raise ValueError(f"Unknown agent {agent_name!r}. Valid options: {valid}")
+    agent_cls = getattr(_agent_mod, agent_cls_name)
+
+    from ai_agent_traps.agent import NaiveAgent  # noqa: F401 (kept for compat)
     from ai_agent_traps.benchmark import BenchmarkEntry
     from ai_agent_traps.config import DEFAULT_CONFIG
     from ai_agent_traps.metrics.keyword_overlap import KeywordOverlapMetric
@@ -123,10 +139,10 @@ def _build_entries() -> list[BenchmarkEntry]:
         entries.append(
             BenchmarkEntry(
                 trap=trap,
-                agent_factory=NaiveAgent,
+                agent_factory=agent_cls,
                 metric=metric,
                 hidden_instruction=instruction,
-                description=f"{trap.spec.subtype.value} / NaiveAgent",
+                description=f"{trap.spec.subtype.value} / {agent_cls_name}",
             )
         )
     return entries
@@ -161,6 +177,12 @@ def main() -> int:
         metavar="USD",
         help="Maximum USD budget for LLM calls",
     )
+    parser.add_argument(
+        "--agent",
+        default="naive",
+        metavar="AGENT",
+        help=f"Agent to evaluate against. Options: {', '.join(_AGENT_REGISTRY)} (default: naive)",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -168,6 +190,7 @@ def main() -> int:
 
     print("AI Agent Traps — Benchmark Runner")
     print("=" * 50)
+    print(f"Agent:      {args.agent}")
     print(f"Seed:       {args.seed}")
     print(f"Metric:     {args.model or 'keyword-overlap'}")
     print(f"Budget:     {'unlimited' if args.budget is None else f'${args.budget:.2f}'}")
@@ -182,7 +205,7 @@ def main() -> int:
         return 1
 
     suite = BenchmarkSuite(name="full-sweep", seed=args.seed)
-    for entry in _build_entries():
+    for entry in _build_entries(args.agent):
         suite.add(entry)
 
     print(f"Running {len(suite.entries)} benchmark entries...")
@@ -195,7 +218,7 @@ def main() -> int:
     print()
 
     timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    out_path = output_dir / f"benchmark_{timestamp}_seed{args.seed}.json"
+    out_path = output_dir / f"benchmark_{timestamp}_{args.agent}_seed{args.seed}.json"
     suite.save(out_path, results=results)
     print(f"Results saved to: {out_path}")
 

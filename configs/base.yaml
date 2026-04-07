@@ -53,7 +53,7 @@ semantic_manipulation:
     # [UNSPECIFIED] Default evasion frame. Paper explicitly names
     # 'security audit simulation', 'red-teaming exercise', 'educational'
     # (§Oversight & Critic Evasion, p. 8).
-    default_frame: "educational"
+    default_frame: "red-teaming exercise"
 
 systemic:
   congestion:
